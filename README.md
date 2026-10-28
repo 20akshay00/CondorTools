@@ -10,6 +10,9 @@ A job then needs no registry, downloads or precompilation. It starts in about 1â
 
 - `ln -s <this folder>/bin/condortools ~/.local/bin/condortools`, with `~/.local/bin` on the `PATH`.
 - `ssh octopus` must work non-interactively (an ssh alias, port 2935). Override the host and remote folder with `CT_HOST` and `CT_ROOT`.
+- Off campus, octopus is reachable only through the UGent VPN. `condortools vpn` shows whether it is connected; `condortools vpn up` and `condortools vpn down` connect and disconnect. The gateway is `CT_VPN` (default `vpn.ugent.be`).
+  - `up` uses openconnect 9 or newer if installed: the login opens in the default browser, and the tunnel asks for `sudo`. Ubuntu 22.04 ships 8.20, too old; get a newer one with `sudo add-apt-repository ppa:mamarley/openconnect-git && sudo apt install openconnect`.
+  - Without it, `up` opens the Cisco Secure Client window and waits until you have connected there. Cisco's own CLI cannot do the browser login.
 
 ## New project
 

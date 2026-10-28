@@ -14,6 +14,8 @@
 #   condortools clean [--all]           once no job from there is queued: fetch, then delete the
 #                                       results and the --also inputs there (code and image stay);
 #                                       --all: the whole project folder there
+#   condortools vpn [up|down]           VPN state; up logs in through the browser with openconnect >= 9
+#                                       (CT_VPN, default vpn.ugent.be), else opens the Cisco window
 # Each project has its own folder there, $CT_ROOT/<project directory name>, owned by one local
 # project (.origin). CT_HOST (default octopus, an ssh alias) and CT_ROOT (default condor)
 # set the remote place.
@@ -23,7 +25,36 @@ HOST=${CT_HOST:-octopus}; ROOT=${CT_ROOT:-condor}
 cmd=$1; shift || true
 project=.
 if [[ $# -gt 0 && $1 != --* && $1 != *.submit && ! $1 =~ ^[0-9]+$ ]]; then project=$1; shift; fi
-[[ -z $cmd || $cmd == help ]] && { sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+[[ -z $cmd || $cmd == help ]] && { sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+if [[ $cmd == vpn ]]; then                     # needs no project
+    GATE=${CT_VPN:-vpn.ugent.be}
+    CISCO=/opt/cisco/secureclient/bin/vpn; [[ -x $CISCO ]] || CISCO=/opt/cisco/anyconnect/bin/vpn
+    # openconnect >= 9 does the SAML login in the default browser; older ones cannot
+    oc=; openconnect --help 2>&1 | grep -q -- --external-browser && oc=1
+    connected() { pgrep -x openconnect >/dev/null || { [[ -x $CISCO ]] && "$CISCO" state | grep -q 'state: Connected'; }; }
+    case "$project" in
+        up)   connected && { echo "already connected"; exit 0; }
+              if [[ $oc ]]; then
+                  # login as the user (their browser session), only the tunnel as root;
+                  # the browser needs a full path (openconnect does not search PATH)
+                  eval "$(openconnect --protocol=anyconnect --useragent=AnyConnect --external-browser="$(command -v xdg-open)" --authenticate "$GATE")"
+                  [[ -n $COOKIE ]] || { echo "login failed" >&2; exit 1; }
+                  sudo openconnect --protocol=anyconnect --useragent=AnyConnect --background --cookie-on-stdin \
+                      --servercert "$FINGERPRINT" ${RESOLVE:+--resolve "$RESOLVE"} "$CONNECT_URL" <<< "$COOKIE"
+              else
+                  [[ -x $CISCO ]] || { echo "neither openconnect >= 9 nor Cisco Secure Client found" >&2; exit 1; }
+                  # Cisco's CLI cannot do the SAML login, so its window connects
+                  pgrep -x vpnui >/dev/null || { setsid "$(dirname "$CISCO")/vpnui" >/dev/null 2>&1 & }
+                  echo "connect in the Cisco window; waiting..."
+                  until connected; do sleep 3; done
+              fi
+              echo connected ;;
+        down) if pgrep -x openconnect >/dev/null; then sudo pkill -INT -x openconnect; echo disconnected   # INT logs out
+              elif [[ -x $CISCO ]]; then "$CISCO" disconnect | grep -E '>> (state|notice)' | tail -1; fi ;;
+        *)    connected && echo connected || { echo "not connected (condortools vpn up)"; exit 1; } ;;
+    esac
+    exit
+fi
 [[ -f $project/Manifest.toml ]] || { echo "no Manifest.toml in $project" >&2; exit 1; }
 name=$(basename "$(readlink -f "$project")")
 h="deps-$(sha1sum "$project/Manifest.toml" | cut -c1-8)"
