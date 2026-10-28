@@ -40,6 +40,7 @@ Day to day: `condortools sync`, then `condortools submit <file>`, then later `co
 - `sync` sends only code and the image. Inputs such as initial states need `condortools sync --also <paths>`: paths inside the project, kept as they are.
 - `fetch` pulls `condor_data/` and `condorlogs/` back.
 - `status` lists this project's queued jobs: state, host, number of starts, hold reason.
+- `q [condor_q args]` is `condor_q -nobatch` on octopus, one line per job: your own jobs, or e.g. `q -allusers`, `q -hold`, `q <cluster>`.
 - `load [--host REGEX]` shows the whole pool now: per user the running jobs, CPUs requested and used (averaged since each job started), memory requested and its sampled peak; then each machine's free CPUs and memory. `--host tensorval` restricts both to matching machines.
 - `usage [cluster]` lists finished jobs: `job.sh`'s peak memory (read from the fetched stderr) against Condor's sampled value and the request, CPUs used against requested, and wall time.
 - Everything else goes through ssh: `ssh octopus condor_rm|condor_release <cluster>`, `ssh octopus condor_tail <job>` for live output, `ssh octopus condor_q -better-analyze <job>` for why a job is idle. Each project folder belongs to one local project (`.origin`, written by the first `sync`); a second project with the same directory name is refused.
