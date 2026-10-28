@@ -4,8 +4,9 @@
 #   julia -J <image> --project=. <julia arguments...>
 # on the job's empty depot with no Pkg step (the image holds every dependency; its JLL
 # libraries are in <image>_depot). Logs the node's Julia build and CPU, and the run's peak
-# memory (/usr/bin/time -v: "Maximum resident set size"), to stderr. Deletes the unpacked
-# image afterwards, so that it is never transferred back.
+# memory (/usr/bin/time -v: "Maximum resident set size") and the depot size (a few hundred
+# KB: only the project's own cache), to stderr. Deletes the unpacked image afterwards, so
+# that it is never transferred back.
 img=$1; shift
 export JULIA_PKG_OFFLINE=true JULIA_DEPOT_PATH="$HOME/.julia:$PWD/${img%.so}_depot"
 [[ -f $img ]] || zstd -q -d --long=27 "$img.zst" || exit 1
@@ -13,4 +14,5 @@ export JULIA_PKG_OFFLINE=true JULIA_DEPOT_PATH="$HOME/.julia:$PWD/${img%.so}_dep
 /usr/bin/time -v /usr/local/bin/julia --startup-file=no -J "$img" --project=. "$@"
 status=$?
 [[ -f $img.zst ]] && rm -f "$img"
+echo "depot after the run: $(du -sh "$HOME/.julia" 2>/dev/null | cut -f1)" >&2
 exit $status

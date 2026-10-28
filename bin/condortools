@@ -1,0 +1,75 @@
+#!/bin/bash
+# Run from a project root (or pass [project] after the command); see README.md.
+#   condortools build [--exclude A,B]   image of the project: remote/sysimage/deps-<h>.so.zst, _depot, image.sub
+#   condortools name                    deps-<h> for the current Manifest
+#   condortools prune                   delete local images of other Manifests
+#   condortools sync [--also P...]      project files + compressed image + job.sh to $CT_HOST:$CT_ROOT/<project>;
+#                                       --also: further inputs (e.g. initial states), paths kept,
+#                                       listed in .also there for clean
+#   condortools submit <file.submit>    condor_submit there (no -remote/-spool)
+#   condortools status                  this project's queued jobs (state, host, hold reason)
+#   condortools usage [cluster]         finished jobs: peak memory (job.sh's, from the fetched stderr;
+#                                       condor's sampled one misses short peaks) and CPUs vs requested
+#   condortools fetch                   condor_data/ and condorlogs/ back from there
+#   condortools clean [--all]           once no job from there is queued: fetch, then delete the
+#                                       results and the --also inputs there (code and image stay);
+#                                       --all: the whole project folder there
+# Each project has its own folder there, $CT_ROOT/<project directory name>, owned by one local
+# project (.origin). CT_HOST (default octopus, an ssh alias) and CT_ROOT (default condor)
+# set the remote place.
+set -e
+TOOL="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
+HOST=${CT_HOST:-octopus}; ROOT=${CT_ROOT:-condor}
+cmd=$1; shift || true
+project=.
+if [[ $# -gt 0 && $1 != --* && $1 != *.submit && ! $1 =~ ^[0-9]+$ ]]; then project=$1; shift; fi
+[[ -z $cmd || $cmd == help ]] && { sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+[[ -f $project/Manifest.toml ]] || { echo "no Manifest.toml in $project" >&2; exit 1; }
+name=$(basename "$(readlink -f "$project")")
+h="deps-$(sha1sum "$project/Manifest.toml" | cut -c1-8)"
+mine="regexp(\"/$ROOT/$name\$\", Iwd)"         # jobs submitted from this project's folder
+fetch() {
+    for d in condor_data condorlogs; do
+        if ssh "$HOST" "test -d $ROOT/$name/$d"; then rsync -a "$HOST:$ROOT/$name/$d/" "$project/$d/" || return 1; fi
+    done
+}
+case "$cmd" in
+    build)  exec julia --startup-file=no --project="$TOOL" "$TOOL/build.jl" "$project" "$@" ;;
+    name)   echo "$h" ;;
+    prune)  find "$project/remote/sysimage" -maxdepth 1 -name 'deps-*' ! -name "$h*" -print -exec gio trash {} + ;;
+    sync)   [[ -f $project/remote/sysimage/$h.so.zst ]] || { echo "no image $h for this Manifest: condortools build" >&2; exit 1; }
+            # one folder per project: the first sync records which local project owns it
+            origin="$(hostname):$(readlink -f "$project")"
+            ssh "$HOST" "mkdir -p $ROOT/$name && cd $ROOT/$name && { test -f .origin || echo '$origin' > .origin; } && test \"\$(cat .origin)\" = '$origin'" ||
+                { echo "$HOST:$ROOT/$name belongs to another project (its .origin); rename one of them" >&2; exit 1; }
+            paths=(); for p in Project.toml Manifest.toml src scripts remote; do [[ -e $project/$p ]] && paths+=("$p"); done
+            (cd "$project" && rsync -aR --delete "${paths[@]}" "$HOST:$ROOT/$name/")
+            if [[ $1 == --also ]]; then
+                shift
+                for p in "$@"; do [[ $p == /* || $p == *..* ]] && { echo "--also takes paths inside the project: $p" >&2; exit 1; }; done
+                (cd "$project" && rsync -aR "$@" "$HOST:$ROOT/$name/")
+                printf '%s\n' "$@" | ssh "$HOST" "cat >> $ROOT/$name/.also"
+            fi
+            rsync -a "$TOOL/job.sh" "$HOST:$ROOT/$name/job.sh"
+            ssh "$HOST" "du -sh $ROOT/$name" ;;
+    submit) ssh "$HOST" "cd $ROOT/$name && mkdir -p condorlogs && condor_submit $1" ;;
+    status) ssh "$HOST" "condor_q -constraint '$mine' -af:h ClusterId ProcId JobStatus RemoteHost NumJobStarts HoldReason" |
+                awk 'NR == 1 {print; next} {split("idle running removed done held", st, " "); $3 = st[$3]; print}' | column -t ;;
+    usage)  c=$mine; [[ -n $1 ]] && c="$c && ClusterId == $1"
+            { echo "Cluster Proc Exit PeakMB(job.sh) SampledMB RequestMB CpusUsed RequestCpus WallMin"
+              ssh "$HOST" "condor_history -constraint '$c' -af ClusterId ProcId ExitCode MemoryUsage RequestMemory CpusUsage RequestCpus RemoteWallClockTime Err" |
+              while read -r cl pr ex mu rm cu rc wall err; do
+                  peak=$(grep -h 'Maximum resident set size' "$project/$err" 2>/dev/null | awk '{if ($NF > m) m = $NF} END {if (m) printf "%.0f", m / 1024; else print "-"}')
+                  printf '%s %s %s %s %s %s %.2f %s %.1f\n' "$cl" "$pr" "$ex" "$peak" "$mu" "$rm" "$cu" "$rc" "$(echo "$wall / 60" | bc -l)"
+              done; } | column -t
+            echo "PeakMB '-': stderr not fetched yet (condortools fetch)" ;;
+    fetch)  fetch ;;
+    clean)  iwds=$(ssh "$HOST" "condor_q -af Iwd")      # a failed query aborts here (set -e)
+            queued=$(grep -c "/$ROOT/$name\$" <<< "$iwds" || true)
+            [[ $queued -eq 0 ]] || { echo "$queued jobs from $ROOT/$name still queued (held ones too): not cleaning" >&2; exit 1; }
+            fetch
+            if [[ $1 == --all ]]; then ssh "$HOST" "rm -rf $ROOT/$name"; echo "fetched; removed $HOST:$ROOT/$name"; exit 0; fi
+            ssh "$HOST" "cd $ROOT/$name && { if test -f .also; then xargs -d '\\n' rm -rf -- < .also; xargs -d '\\n' -n1 dirname < .also | xargs -d '\\n' rmdir -p --ignore-fail-on-non-empty 2>/dev/null; fi; rm -rf condor_data condorlogs .also; } && du -sh ."
+            echo "fetched; removed results and --also inputs on $HOST:$ROOT/$name" ;;
+    *)      echo "unknown command $cmd (condortools help)" >&2; exit 1 ;;
+esac

@@ -7,9 +7,12 @@
 #
 # Writes <project>/remote/sysimage/deps-<h>.so, h the first 8 hex digits of the SHA-1 of the
 # project's Manifest.toml (a different Manifest needs a new image), and next to it
-# deps-<h>.so.zst (zstd -19 --long=27, ~6.5x smaller; what jobs ship) and
+# deps-<h>.so.zst (zstd -19 --long=27, ~6.5x smaller; what jobs ship; the .so itself is then
+# deleted: `zstd -d --long=27` restores it) and
 # deps-<h>_depot/artifacts: the binary libraries of the JLL packages, which are not in the
 # image but looked up in a depot when it loads (JLLs shipped with Julia are not needed).
+# Also writes remote/sysimage/image.sub, `IMAGE = remote/sysimage/deps-<h>`, which submit
+# files include (`include : remote/sysimage/image.sub`), so a new image needs no edits there.
 
 using PackageCompiler, TOML, SHA, Pkg.Artifacts
 
@@ -56,5 +59,6 @@ for (name, entries) in TOML.parsefile(joinpath(project, "Manifest.toml"))["deps"
     end
 end
 
-run(`zstd -q -f -19 -T4 --long=27 $out -o $out.zst`)
-println("compressed: ", out, ".zst")
+run(`zstd -q -f -19 -T4 --long=27 --rm $out -o $out.zst`)
+println("compressed: ", out, ".zst (the .so removed)")
+write(joinpath(dirname(out), "image.sub"), "IMAGE = remote/sysimage/deps-$h\n")

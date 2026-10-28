@@ -1,20 +1,22 @@
 # Template: one job per node, running a small script of the project under its image.
-# Copy to the project root as test.submit, set IMAGE (jlsysimage name) and SCRIPT, then
-#   jlsysimage sync && jlsysimage submit test.submit
+# Copy to the project root as test.submit, set SCRIPT, then
+#   condortools sync && condortools submit test.submit
+# IMAGE comes from remote/sysimage/image.sub (written by condortools build). Inputs land in
+# the sandbox root (preserve_relative_paths = FALSE), directories keep their contents.
 # Real jobs: the same, with the job script and its arguments, measured requests (README),
 # and transfer_output_files = the job's output directory.
-IMAGE  = remote/sysimage/deps-XXXXXXXX
+include : remote/sysimage/image.sub
 SCRIPT = remote/sysimage/workload.jl
 
 executable = job.sh
-arguments = $(IMAGE).so $(SCRIPT)
+arguments = $Fn(IMAGE).so $Fnx(SCRIPT)
 environment = "HOME=/tmp/ashankar OPENBLAS_NUM_THREADS=1"
 should_transfer_files   = TRUE
-preserve_relative_paths = TRUE
+preserve_relative_paths = FALSE
 when_to_transfer_output = ON_EXIT
-transfer_input_files = Project.toml, Manifest.toml, src, $(SCRIPT), $(IMAGE).so.zst, $(IMAGE)_depot
+transfer_input_files = Project.toml, Manifest.toml, src, job.sh, $(SCRIPT), $(IMAGE).so.zst, $(IMAGE)_depot
 # Name the outputs: otherwise every new file in the sandbox (the 540 MB unpacked image) comes back.
-transfer_output_files = ""
+transfer_output_files =
 request_cpus   = 1
 request_memory = 2 G
 request_disk   = 2 G
