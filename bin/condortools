@@ -14,6 +14,8 @@
 #   condortools clean [--all]           once no job from there is queued: fetch, then delete the
 #                                       results and the --also inputs there (code and image stay);
 #                                       --all: the whole project folder there
+#   condortools load [--host REGEX]     running jobs of all users (CPUs and memory requested vs used),
+#                                       then each machine's free CPUs and memory; --host: matching machines only
 #   condortools vpn [up|down]           VPN state; up logs in through the browser with openconnect >= 9
 #                                       (CT_VPN, default vpn.ugent.be), else opens the Cisco window
 # Each project has its own folder there, $CT_ROOT/<project directory name>, owned by one local
@@ -25,7 +27,7 @@ HOST=${CT_HOST:-octopus}; ROOT=${CT_ROOT:-condor}
 cmd=$1; shift || true
 project=.
 if [[ $# -gt 0 && $1 != --* && $1 != *.submit && ! $1 =~ ^[0-9]+$ ]]; then project=$1; shift; fi
-[[ -z $cmd || $cmd == help ]] && { sed -n '2,21p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+[[ -z $cmd || $cmd == help ]] && { sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
 if [[ $cmd == vpn ]]; then                     # needs no project
     GATE=${CT_VPN:-vpn.ugent.be}
     CISCO=/opt/cisco/secureclient/bin/vpn; [[ -x $CISCO ]] || CISCO=/opt/cisco/anyconnect/bin/vpn
@@ -53,6 +55,36 @@ if [[ $cmd == vpn ]]; then                     # needs no project
               elif [[ -x $CISCO ]]; then "$CISCO" disconnect | grep -E '>> (state|notice)' | tail -1; fi ;;
         *)    connected && echo connected || { echo "not connected (condortools vpn up)"; exit 1; } ;;
     esac
+    exit
+fi
+if [[ $cmd == load ]]; then                    # needs no project
+    [[ $1 == --host ]] && re=$2
+    c='JobStatus == 2'; m=PartitionableSlot
+    [[ -n $re ]] && { c="$c && regexp(\"$re\", RemoteHost)"; m="$m && regexp(\"$re\", Machine)"; }
+    # CpusUsage: cores used, averaged since the job started; ResidentSetSize(_RAW): peak RSS in KiB as
+    # sampled (MemoryUsage is it rounded, in MB), so short peaks are missed
+    ssh "$HOST" "condor_q -allusers -global -constraint '$c' -af Owner RequestCpus CpusUsage RequestMemory MemoryUsage ResidentSetSize_RAW;
+                 echo --; condor_status -constraint '$m' -af Machine TotalSlotCpus Cpus TotalSlotMemory Memory" |
+    LC_ALL=C awk '
+        $1 == "--" { machines = 1; next }
+        !machines && $2 ~ /^[0-9]+$/ {
+            u = $1; jobs[u]++; rc[u] += $2; cu[u] += $3; rm[u] += $4
+            pm[u] += ($6 ~ /^[0-9]+$/) ? $6 / 1024 : $5
+        }
+        machines { mach[++n] = sprintf("%-22s %6d %10d %8.0f %8.0f", $1, $2, $3, $4 / 1024, $5 / 1024) }
+        END {
+            f = "%-10s %5s %6s %10s %8s %8s %8s\n"
+            printf f, "USER", "JOBS", "CPUS", "CPUS_USED", "MEM_GB", "PEAK_GB", "MEM_UTIL"; fflush()
+            for (u in jobs) {
+                printf "%-10s %5d %6d %10.1f %8.1f %8.1f %7.0f%%\n", u, jobs[u], rc[u], cu[u], rm[u] / 1024, pm[u] / 1024,
+                    100 * pm[u] / rm[u] | "sort -k5 -nr"
+                J += jobs[u]; RC += rc[u]; CU += cu[u]; RM += rm[u]; PM += pm[u]
+            }
+            close("sort -k5 -nr")
+            if (J) printf "%-10s %5d %6d %10.1f %8.1f %8.1f %7.0f%%\n", "total", J, RC, CU, RM / 1024, PM / 1024, 100 * PM / RM
+            printf "\n%-22s %6s %10s %8s %8s\n", "MACHINE", "CPUS", "FREE_CPUS", "MEM_GB", "FREE_GB"
+            for (i = 1; i <= n; i++) print mach[i]
+        }'
     exit
 fi
 [[ -f $project/Manifest.toml ]] || { echo "no Manifest.toml in $project" >&2; exit 1; }
