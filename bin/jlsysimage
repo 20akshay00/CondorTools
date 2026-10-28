@@ -1,0 +1,35 @@
+#!/bin/bash
+# Run from a project root (or pass [project] after the command); see README.md.
+#   jlsysimage build [--exclude A,B]   image of the project: remote/sysimage/deps-<h>.{so,so.zst}, _depot
+#   jlsysimage name                    deps-<h> for the current Manifest
+#   jlsysimage prune                   delete local images of other Manifests
+#   jlsysimage sync                    project files + compressed image + job.sh to $JLS_HOST:$JLS_ROOT/<project>
+#   jlsysimage submit <file.submit>    condor_submit there (no -remote/-spool)
+#   jlsysimage fetch                   condor_data/ and condorlogs/ back from there
+# JLS_HOST (default octopus, an ssh alias) and JLS_ROOT (default condor) set the remote place.
+set -e
+TOOL="$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")"
+HOST=${JLS_HOST:-octopus}; ROOT=${JLS_ROOT:-condor}
+cmd=$1; shift || true
+project=.
+if [[ $# -gt 0 && $1 != --* && $1 != *.submit ]]; then project=$1; shift; fi
+[[ -z $cmd || $cmd == help ]] && { sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0; }
+[[ -f $project/Manifest.toml ]] || { echo "no Manifest.toml in $project" >&2; exit 1; }
+name=$(basename "$(readlink -f "$project")")
+h="deps-$(sha1sum "$project/Manifest.toml" | cut -c1-8)"
+case "$cmd" in
+    build)  exec julia --startup-file=no --project="$TOOL" "$TOOL/build.jl" "$project" "$@" ;;
+    name)   echo "$h" ;;
+    prune)  find "$project/remote/sysimage" -maxdepth 1 -name 'deps-*' ! -name "$h*" -print -exec gio trash {} + ;;
+    sync)   [[ -f $project/remote/sysimage/$h.so.zst ]] || { echo "no image $h for this Manifest: jlsysimage build" >&2; exit 1; }
+            ssh "$HOST" "mkdir -p $ROOT/$name"
+            paths=(); for p in Project.toml Manifest.toml src scripts remote; do [[ -e $project/$p ]] && paths+=("$p"); done
+            (cd "$project" && rsync -aR --delete --exclude 'remote/sysimage/*.so' "${paths[@]}" "$HOST:$ROOT/$name/")
+            rsync -a "$TOOL/job.sh" "$HOST:$ROOT/$name/job.sh"
+            ssh "$HOST" "du -sh $ROOT/$name" ;;
+    submit) ssh "$HOST" "cd $ROOT/$name && mkdir -p condorlogs && condor_submit $1" ;;
+    fetch)  for d in condor_data condorlogs; do
+                ssh "$HOST" "test -d $ROOT/$name/$d" && rsync -a "$HOST:$ROOT/$name/$d/" "$project/$d/"
+            done; true ;;
+    *)      echo "unknown command $cmd (jlsysimage help)" >&2; exit 1 ;;
+esac

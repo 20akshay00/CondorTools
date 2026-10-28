@@ -1,0 +1,29 @@
+# Template: one job per node, running a small script of the project under its image.
+# Copy to the project root as test.submit, set IMAGE (jlsysimage name) and SCRIPT, then
+#   jlsysimage sync && jlsysimage submit test.submit
+# Real jobs: the same, with the job script and its arguments, measured requests (README),
+# and transfer_output_files = the job's output directory.
+IMAGE  = remote/sysimage/deps-XXXXXXXX
+SCRIPT = remote/sysimage/workload.jl
+
+executable = job.sh
+arguments = $(IMAGE).so $(SCRIPT)
+environment = "HOME=/tmp/ashankar OPENBLAS_NUM_THREADS=1"
+should_transfer_files   = TRUE
+preserve_relative_paths = TRUE
+when_to_transfer_output = ON_EXIT
+transfer_input_files = Project.toml, Manifest.toml, src, $(SCRIPT), $(IMAGE).so.zst, $(IMAGE)_depot
+# Name the outputs: otherwise every new file in the sandbox (the 540 MB unpacked image) comes back.
+transfer_output_files = ""
+request_cpus   = 1
+request_memory = 2 G
+request_disk   = 2 G
+requirements = (machine == "$(MACHINE)") && has_julia
+output = condorlogs/test_$(Cluster).$(Process).out
+error  = condorlogs/test_$(Cluster).$(Process).err
+log    = condorlogs/test_$(Cluster).log
+queue MACHINE from (
+    tensorval.ugent.be
+    peps.ugent.be
+    erquaf.ugent.be
+)
